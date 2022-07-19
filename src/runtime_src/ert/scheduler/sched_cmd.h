@@ -30,6 +30,8 @@ struct sched_cmd {
 		struct xgq_cmd_start_cuidx start_cu_cmd;
 	/* TODO: need to cache entire cmd when we have private per CU queue. */
 	};
+	uint32_t      start_ts;
+	uint32_t      end_ts;
 };	
 
 /* Load XGQ cmd header from HW. Expensive! */

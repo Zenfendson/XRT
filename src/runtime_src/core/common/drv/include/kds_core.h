@@ -170,6 +170,8 @@ struct kds_sched {
 	struct cmdmem_info	cmdmem;
 	struct completion	comp;
 	struct kds_client      *anon_client;
+	u64                     cmd_count;
+	u64                     last_cmd_count;
 
 	/* Settings */
 	bool			ini_disable;

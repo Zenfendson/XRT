@@ -755,7 +755,7 @@ static int xocl_command_ioctl(struct xocl_dev *xdev, void *data,
 		xcmd->type = KDS_CU;
 	else
 		xcmd->type = KDS_ERT;
-
+	
 	switch (ecmd->opcode) {
 	case ERT_CONFIGURE:
 	case ERT_SK_CONFIG:

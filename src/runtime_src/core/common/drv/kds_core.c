@@ -19,6 +19,7 @@
 #include <linux/poll.h>
 #include <linux/anon_inodes.h>
 #include "kds_core.h"
+#include <asm/timex.h>
 
 /* for sysfs */
 int store_kds_echo(struct kds_sched *kds, const char *buf, size_t count,
@@ -1996,9 +1997,10 @@ void abort_ecmd2xcmd(struct ert_abort_cmd *ecmd, struct kds_command *xcmd)
 void set_xcmd_timestamp(struct kds_command *xcmd, enum kds_status s)
 {
 	if (!xcmd->timestamp_enabled)
-		return;
-
-	xcmd->timestamp[s] = ktime_to_ns(ktime_get());
+	// 	return;
+	// xcmd->timestamp[s] = ktime_to_ns(ktime_get());
+		xcmd->timestamp[s] = get_cycles();
+	// printk("rdtsc : %llu", xcmd->timestamp[s]);
 }
 
 /**

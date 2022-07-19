@@ -13,6 +13,7 @@
 #include <linux/delay.h>
 #include "kds_client.h"
 #include "xrt_cu.h"
+#include <asm/timex.h>
 
 inline void xrt_cu_circ_produce(struct xrt_cu *xcu, u32 stage, uintptr_t cmd)
 {
@@ -150,6 +151,10 @@ static inline void process_cq(struct xrt_cu *xcu)
 		set_xcmd_timestamp(xcmd, xcmd->status);
 		xrt_cu_circ_produce(xcu, CU_LOG_STAGE_CQ, (uintptr_t)xcmd);
 		xcmd->cb.notify_host(xcmd, xcmd->status);
+		if (xcu->stats_enabled) {
+			update_ecmd_time(xcu, xcmd->start_ts, xcmd->end_ts);
+			incr_ecmd_count(xcu);
+		}
 		list_del(&xcmd->list);
 		xcmd->cb.free(xcmd);
 		--xcu->num_cq;
@@ -175,6 +180,12 @@ static inline void __process_sq(struct xrt_cu *xcu)
 		xcu->ready_cnt = 0;
 	}
 
+	if (xcu->stats_enabled) {
+		xrt_cu_get_time(&xcu->sq_time);
+		if((xcu->sq_time - xcu->last_sq_time) > xcu->sq_barrer) {
+			incr_sq_count(xcu);
+		}
+	}
 	/* Sometimes a CU done but it doesn't ready for new command.
 	 * In this case, sq could be empty.
 	 */
@@ -206,6 +217,14 @@ get_complete_and_out:
 		--xcu->num_sq;
 		xcmd = xrt_cu_get_complete(xcu);
 	}
+	if (xcu->stats_enabled) {
+		if (xcu->num_sq == 0 && xcu->num_rq == 0 && xcu->num_pq == 0) {
+			// printk("idle start");
+			xrt_cu_get_time(&xcu->idle_start);
+			xcu->idle = 1;
+		}
+	}
+
 }
 
 /**
@@ -270,6 +289,7 @@ static inline int process_rq(struct xrt_cu *xcu)
 
 	dst_q = NULL;
 	dst_len = &xcu->num_sq;
+	xrt_cu_get_time(&xcu->newest_cmd_start_ts);
 	/* ktime_get_* is still heavy. This impact ~20% of IOPS on echo mode.
 	 * For some sort of CU, which usually has a relative long execute time,
 	 * we could hide this overhead and provide timestamp for each command.
@@ -294,6 +314,7 @@ move_cmd:
 static inline void process_pq(struct xrt_cu *xcu)
 {
 	unsigned long flags;
+	u64           idle_start;
 
 	/* Get pending queue command number without lock.
 	 * The idea is to reduce the possibility of conflict on lock.
@@ -301,6 +322,19 @@ static inline void process_pq(struct xrt_cu *xcu)
 	 */
 	if (!xcu->num_pq)
 		return;
+	if (xcu->stats_enabled) {
+		// printk("num_pq: %u, num_sq: %u, num_rq: %u", xcu->num_pq, xcu->num_sq, xcu->num_rq);
+		if (xcu->num_pq > 0 && xcu->num_sq == 0 && xcu->num_rq == 0) {
+			// printk("idle end");
+			idle_start = xcu->idle_start;
+			if (xcu->idle) {
+				xrt_cu_get_time(&xcu->idle_end);
+				xcu->idle_total += xcu->idle_end - idle_start;
+				// printk("idle_total: %llu", xcu->idle_total);
+				xcu->idle = 0;
+			}
+		} 
+	}
 	spin_lock_irqsave(&xcu->pq_lock, flags);
 	if (xcu->num_pq) {
 		list_splice_tail_init(&xcu->pq, &xcu->rq);
@@ -387,6 +421,7 @@ done:
 
 int xrt_cu_process_queues(struct xrt_cu *xcu)
 {
+	xcu->stats_enabled = 1;
 	/* Move pending commands to running queue */
 	process_pq(xcu);
 
@@ -761,6 +796,8 @@ int xrt_cu_init(struct xrt_cu *xcu)
 	xcu->thread = NULL;
 
 	mod_timer(&xcu->timer, jiffies + CU_TIMER);
+	init_ecmd_count(xcu);
+	init_cu_time(xcu);
 	return err;
 }
 
@@ -877,10 +914,275 @@ ssize_t show_formatted_cu_stat(struct xrt_cu *xcu, char *buf)
 {
 	ssize_t sz = 0;
 	char *fmt = "%lld %d\n";
+	char *fmt1 = "average queue length: %llu ";
+	char *fmt2 = "max running cmds: %llu ";
+	char *fmt3 = "cmds runned total: %llu";
+	char *fmt4 = "cmds runned since last: %llu ";
 	int in_flight = xcu->num_sq;
+	u64 average_sq_len;
+	u64 incremental_ecmd_count;
 
-	sz += scnprintf(buf+sz, PAGE_SIZE - sz, fmt,
-			xcu->cu_stat.usage, in_flight);
+	average_sq_len = get_average_sq(xcu);
+	incremental_ecmd_count = get_incre_ecmd_count(xcu);
+
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, fmt, xcu->cu_stat.usage, in_flight);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, fmt1, average_sq_len);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, fmt2, xcu->max_running);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, fmt3, xcu->usage_curr);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, fmt4, incremental_ecmd_count);
 
 	return sz;
+}
+
+void compare_time(u64 *time)
+{
+	u64 counter = 1000000;
+	int i;
+
+	*time = ktime_to_ns(ktime_get());
+	// printk("ktime start: %llu", *time);
+	for(i = 0; i < counter; i++) {
+		*time = ktime_to_ns(ktime_get());
+	}
+	*time = ktime_to_ns(ktime_get());
+	// printk("ktime end: %llu", *time);
+
+	*time = get_cycles();
+	// printk("rdstc start counter: %llu", *time);
+	for(i = 0; i < counter; i++) {
+		*time = get_cycles();
+	}
+	*time = get_cycles();
+	// printk("rdtsc end counter: %llu", *time);
+}
+
+int init_cu_time(struct xrt_cu *xcu)
+{
+	int err = 0;
+	// u64 time;
+
+	xrt_cu_get_time(&xcu->last_timestamp);
+	//compare_time(&time);
+
+	return err; 
+}
+
+int init_ecmd_count(struct xrt_cu *xcu)
+{
+	int err = 0;
+
+	xcu->last_cmd_time_total = 0;
+	xcu->cmd_time_total = 0;
+	xcu->newest_cmd_start_ts = 0;
+	xcu->last_xcmd_end_time = 0;
+	xcu->sq_total = 0;
+	xcu->sq_count = 0;
+
+	//printk("init cmd time total: %llu", xcu->cmd_time_total);
+
+	return err;
+}
+
+void incr_ecmd_count(struct xrt_cu *xcu)
+{
+	xcu->usage_curr += 1;
+}
+
+void reset_sq_count(struct xrt_cu *xcu, u64 sq_barrer)
+{
+	xcu->sq_total = 0;
+	xcu->sq_count = 0;
+	xcu->sq_barrer = sq_barrer;
+}
+
+void incr_sq_count(struct xrt_cu *xcu)
+{
+	xcu->sq_total += xcu->num_sq;
+	xcu->sq_count += 1;
+	xcu->last_sq_time = xcu->sq_time;
+}
+
+void update_ecmd_time(struct xrt_cu *xcu, u32 start_time, u32 end_time)
+{
+	//printk("start, end time in xcmd: %u, %u", start_time, end_time);
+	// assume ert works at 250 Mhz
+	//printk("last cmd time total: %llu", xcu->cmd_time_total);
+	xcu->cmd_time_total += (end_time - start_time) * 4;
+	xrt_cu_get_time(&xcu->last_xcmd_end_time);
+	// end lock
+	//printk("xcmd usage: %u", (end_time-start_time));
+	//printk("update cmd time total(ns): %llu", xcu->cmd_time_total);
+}
+
+ssize_t show_cu_busy(struct xrt_cu *xcu, char *buf)
+{
+	ssize_t sz = 0;
+	char *fmt1 = "cu idx: %d ,";
+	char *fmt2 = "busy percentage since last measurement: %llu\r\n";
+	u64 new_ts;
+	u64 cu_stats;
+	u64 delta_cmd_time_total;
+	u64 delta_xcu_time;
+	u64 last_cmd_time_total;
+	u64 newest_cmd_start_ts;
+	
+	last_cmd_time_total = xcu->last_xcmd_end_time;
+	newest_cmd_start_ts = xcu->newest_cmd_start_ts;
+	xrt_cu_get_time(&new_ts);
+	delta_cmd_time_total = (xcu->cmd_time_total - xcu->last_cmd_time_total);
+	delta_xcu_time = new_ts - xcu->last_timestamp_cu_busy;
+
+	if (delta_cmd_time_total > 0) {
+		/* between two measurement, at least one cmd has completed*/
+		if (xcu->num_sq) {
+			/* another cmds submitted, check if the new cmd is behind the last cmd end time*/
+			if (last_cmd_time_total < newest_cmd_start_ts) {
+				compensate_count(delta_cmd_time_total, &xcu->time_adjust, 250);
+				cu_stats = (delta_cmd_time_total - xcu->time_adjust + new_ts - newest_cmd_start_ts) * 100 / delta_xcu_time;
+				xcu->time_adjust = new_ts - newest_cmd_start_ts; 
+				// this should minus - the start time of cmd just after the completed cmd. Or there is no problem because the below branch. 
+			} else {
+				/* no data from ert for the rest running commands, assume it is running*/
+				compensate_count(delta_cmd_time_total, &xcu->time_adjust, 250);
+				cu_stats = (delta_cmd_time_total - xcu->time_adjust + new_ts - last_cmd_time_total) * 100 / delta_xcu_time;
+				xcu->time_adjust = new_ts - last_cmd_time_total;  
+			}
+		}
+		else {
+			compensate_count(delta_cmd_time_total, &xcu->time_adjust, 250);
+			cu_stats = (delta_cmd_time_total - xcu->time_adjust) * 100 / delta_xcu_time;
+			xcu->time_adjust = 0;
+		}
+	} else if (delta_cmd_time_total == 0) {
+		if (xcu->num_sq) {
+		/* no update from ert, but cu is running */
+			cu_stats = 100;
+			if(newest_cmd_start_ts > xcu->last_timestamp_cu_busy) 
+				xcu->time_adjust += new_ts - newest_cmd_start_ts;
+			else
+				xcu->time_adjust += delta_xcu_time;
+		}	
+		else {
+		/* cu is idle */
+			cu_stats = 0;
+		}
+	}
+	xcu->last_cmd_time_total = xcu->cmd_time_total;
+	xcu->last_timestamp_cu_busy = new_ts;
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, fmt1,
+			xcu->info.cu_idx);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, fmt2,
+			cu_stats);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, "delta_cmd_time_total:   %llu ",
+			delta_cmd_time_total);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, "new time adjust:   %llu \r\n",
+			xcu->time_adjust);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, "delta_xcu_time: %llu \r\n",
+			delta_xcu_time);
+	// sz += scnprintf(buf+sz, PAGE_SIZE - sz, "last_xcmd_end_time:  %llu \r\n",
+	// 		last_cmd_time_total);
+	// sz += scnprintf(buf+sz, PAGE_SIZE - sz, "newest_cmd_start_ts: %llu \r\n",
+	// 		newest_cmd_start_ts);
+	// sz += scnprintf(buf+sz, PAGE_SIZE - sz, "time_adjust: %llu \r\n",
+	// 		xcu->time_adjust);
+	return sz;
+}
+
+ssize_t show_cu_idle(struct xrt_cu *xcu, char *buf)
+{
+	ssize_t   sz = 0;
+	char      *fmt1 = "cu idx: %d ,";
+	u64       new_ts;
+	u64       delta_xcu_time;
+	u64       delta_idle_time;
+	u64       cu_idle;
+	
+	u64       idle_start;
+	u64       last_read_idle_start;
+	u64       ts_status;
+
+	idle_start = xcu->idle_start;
+	last_read_idle_start = xcu->last_read_idle_start;
+	delta_idle_time = xcu->idle_total - xcu->last_idle_total;
+	xrt_cu_get_time(&new_ts);
+	delta_xcu_time = new_ts - xcu->last_timestamp;
+
+	if(xcu->num_pq == 0 && xcu->num_rq == 0 && xcu->num_sq == 0) {
+		if (xcu->last_ts_status) {
+			cu_idle = delta_idle_time + new_ts - idle_start;
+		} else {
+			if (delta_idle_time == 0) {
+				cu_idle = delta_xcu_time;
+			} else {
+				cu_idle = delta_idle_time - (xcu->last_timestamp - last_read_idle_start) + (new_ts - idle_start); 
+			}
+		}
+		ts_status = 0;
+	} else if (xcu->num_pq > 0 || xcu->num_rq > 0 || xcu->num_sq > 0) {
+		if (xcu->last_ts_status) {
+			cu_idle = delta_idle_time;
+		} else {
+			cu_idle = delta_idle_time - (xcu->last_timestamp - last_read_idle_start);
+		}
+		ts_status = 1;
+	}
+
+	cu_idle = cu_idle * 100 / delta_xcu_time;
+	xcu->last_read_idle_start = idle_start;
+	xcu->last_idle_total = xcu->idle_total;
+	xcu->last_timestamp = new_ts;
+	xcu->last_ts_status = ts_status;
+
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, fmt1, xcu->info.cu_idx);
+
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, " current idle percentage %llu \r\n", cu_idle);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, "delta_idle_time:   %llu \r\n",
+		delta_idle_time);
+	sz += scnprintf(buf+sz, PAGE_SIZE - sz, "delta_xcu_time:   %llu \r\n",
+		delta_xcu_time);
+
+	return sz;
+}
+
+u64 get_incre_ecmd_count(struct xrt_cu *xcu)
+{
+	u64 incre_ecmds = 0;
+
+	incre_ecmds = xcu->usage_curr - xcu->usage_prev;
+	xcu->usage_prev = xcu->usage_curr;
+
+	return incre_ecmds;
+}
+
+u64 get_average_sq(struct xrt_cu *xcu)
+{
+	u64 average_sq_len = 0;
+	
+	average_sq_len = xcu->sq_total / xcu->sq_count;
+	// the number means every 0.01 seconds update the sq count
+	reset_sq_count(xcu, 10000000);
+
+	return average_sq_len;
+}
+
+void xrt_cu_get_time(u64 *time)
+{
+	*time = ktime_to_ns(ktime_get());
+	// printk("ktime: %llu", *time);
+	// *time = get_cycles();
+	// printk("get cycle time: %llu", *time);
+}
+
+void compensate_count(u64 count, u64 *offset, u32 freq)
+{
+	int i = 0;
+	u64 one_overflow = 4294967295 * (1000 / freq);
+
+	while ( *offset > one_overflow) {
+		*offset -= one_overflow;
+		i += 1;
+	}
+	// if (count < *offset) {
+	// 	*offset = 0;
+	// }
 }

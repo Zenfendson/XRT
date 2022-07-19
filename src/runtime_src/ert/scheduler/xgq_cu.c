@@ -40,12 +40,34 @@ inline void xgq_cu_init(struct xgq_cu *xc, struct xgq *q, struct sched_cu *cu)
 	cu_set_status(cu, SCHED_AP_IDLE);
 }
 
+/**
+ * Utility to read a 32 bit value from any axi-lite peripheral
+ */
+static inline uint32_t
+read_reg(uint32_t addr)
+{
+	volatile uint32_t *ptr = (uint32_t *)(addr);
+	return *ptr;
+}
+
+static inline uint32_t
+read_clk_counter(void)
+{
+	return read_reg(0x1F70000);
+} 
+
 static inline void xgq_cu_complete_cmd(struct xgq_cu *xc, int err)
 {
 	uint64_t slot_addr;
+	struct xgq_com_queue_entry *cq_entry = NULL;
+	struct sched_cmd *cmd = &xc->xc_cmd; 
 
 	while(xgq_produce(xc->xc_q, &slot_addr))
 		continue;
+
+	cq_entry = (struct xgq_com_queue_entry *)(uintptr_t)slot_addr;
+	xgq_reg_write32(0, (uint32_t)&cq_entry->result, cmd->start_ts);
+	xgq_reg_write32(0, (uint32_t)&cq_entry->resvd, cmd->end_ts); 
 
 	xgq_notify_peer_produced(xc->xc_q);
 	xgq_cu_interrupt_trigger(xc, xc->xgq_id);
@@ -97,6 +119,7 @@ inline int xgq_cu_process(struct xgq_cu *xc)
 			else
 				cu_clear_status(cu, SCHED_AP_DONE);
 #else
+			cmd->end_ts = read_clk_counter();
 			cu_done(cu);
 #endif
 			xgq_cu_complete_cmd(xc, 0);
@@ -107,6 +130,7 @@ inline int xgq_cu_process(struct xgq_cu *xc)
 	if (unlikely(!cmd_is_valid(cmd) || !cu_has_status(cu, SCHED_AP_WAIT_FOR_INPUT)))
 		return -EBUSY;
 
+	cmd->start_ts = read_clk_counter(); 
 	switch (cmd_op_code(cmd)) {
 	case XGQ_CMD_OP_START_CUIDX:
 #ifdef ERT_DEVELOPER

@@ -76,6 +76,26 @@ cu_info_show(struct device *dev, struct device_attribute *attr, char *buf)
 static DEVICE_ATTR_RO(cu_info);
 
 static ssize_t
+cu_busy_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct xocl_cu *cu = platform_get_drvdata(pdev);
+
+	return show_cu_busy(&cu->base, buf);
+}
+static DEVICE_ATTR_RO(cu_busy);
+
+static ssize_t
+cu_idle_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct xocl_cu *cu = platform_get_drvdata(pdev);
+
+	return show_cu_idle(&cu->base, buf);
+}
+static DEVICE_ATTR_RO(cu_idle);
+
+static ssize_t
 poll_interval_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -219,6 +239,8 @@ static struct attribute *cu_attrs[] = {
 	&dev_attr_debug.attr,
 	&dev_attr_cu_stat.attr,
 	&dev_attr_cu_info.attr,
+	&dev_attr_cu_busy.attr,
+	&dev_attr_cu_idle.attr,
 	&dev_attr_poll_interval.attr,
 	&dev_attr_busy_threshold.attr,
 	&dev_attr_name.attr,

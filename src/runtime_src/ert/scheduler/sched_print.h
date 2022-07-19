@@ -24,7 +24,7 @@
 #define xil_printf printf
 #endif
 
-//#define ERT_VERBOSE
+#define ERT_VERBOSE
 #ifdef ERT_BUILD_V30
 # define ERT_PRINTF(format,...) xil_printf(format, ##__VA_ARGS__)
 #ifdef ERT_VERBOSE

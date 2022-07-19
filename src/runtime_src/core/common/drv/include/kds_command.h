@@ -110,6 +110,9 @@ struct kds_command {
 	u32			 exec_bo_handle;
 	/* to notify inkernel exec completion */
 	struct in_kernel_cb	*inkern_cb;
+	/* to show the exectucting timestamp */
+	u32                      start_ts;
+	u32                      end_ts;
 };
 
 void set_xcmd_timestamp(struct kds_command *xcmd, enum kds_status s);

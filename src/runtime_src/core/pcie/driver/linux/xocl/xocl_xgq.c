@@ -123,6 +123,7 @@ static int xocl_xgq_handle_resp(struct xocl_xgq *xgq, int id, u64 resp_addr)
 	struct xocl_xgq_client *client = &xgq->xx_clients[id];
 	struct kds_command *xcmd = NULL;
 	unsigned long flags = 0;
+	int xocl_read_timestamps_enabled = 0;
 
 	spin_lock_irqsave(&client->xxc_lock, flags);
 	if (unlikely(list_empty(&client->xxc_submitted))) {
@@ -132,8 +133,17 @@ static int xocl_xgq_handle_resp(struct xocl_xgq *xgq, int id, u64 resp_addr)
 
 	xcmd = list_first_entry(&client->xxc_submitted, struct kds_command, list);
 
-	if (client->xxc_prot & XGQ_PROT_NEED_RESP)
+	if (client->xxc_prot & XGQ_PROT_NEED_RESP) {
 		xocl_xgq_read_queue((u32 *)&xcmd->rcode, (u32 __iomem *)&resp->rcode, sizeof(xcmd->rcode)/4);
+	}
+	
+	xocl_read_timestamps_enabled = 1;
+	if (xocl_read_timestamps_enabled) {
+		xocl_xgq_read_queue((u32 *)&xcmd->start_ts, (u32 __iomem *)&resp->result, sizeof(xcmd->start_ts)/4);
+		xocl_xgq_read_queue((u32 *)&xcmd->end_ts, (u32 __iomem *)&resp->resvd, sizeof(xcmd->end_ts)/4);
+	}
+	/*printk(KERN_INFO "start cmd count: %u\r\n", xcmd->start_ts);
+	printk(KERN_INFO "end time count: %u\r\n", xcmd->end_ts); */
 
 	xcmd->status = KDS_COMPLETED;
 	list_move_tail(&xcmd->list, &client->xxc_completed);

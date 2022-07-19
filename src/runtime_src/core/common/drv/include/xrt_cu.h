@@ -355,6 +355,30 @@ struct xrt_cu {
 	char			   debug;
 	char			   log_buf[CIRC_BUF_SIZE] __aligned(sizeof(u64));
 	struct circ_buf		   crc_buf;
+
+	/* For cu profiling statistic */
+	u64                        stats_enabled;
+	u64                        last_timestamp;
+	u64                        last_timestamp_cu_busy;
+	u64                        last_cmd_time_total;
+	u64                        cmd_time_total;
+	u64                        usage_prev;
+	u64                        usage_curr;
+	u64                        sq_total;
+	u64                        sq_count;
+	u64                        sq_time;
+	u64                        sq_barrer;
+	u64                        last_sq_time;
+	u64                        time_adjust;
+	u64                        newest_cmd_start_ts;
+	u64                        last_xcmd_end_time;
+	u64                        idle_total;
+	u64                        last_idle_total;
+	u64                        idle_start;
+	u64                        idle_end;
+	u64                        last_read_idle_start;
+	u64                        last_ts_status;
+	u64                        idle;
 };
 
 static inline char *prot2str(enum CU_PROTOCOL prot)
@@ -515,6 +539,20 @@ void xrt_cu_fini(struct xrt_cu *xcu);
 ssize_t show_cu_stat(struct xrt_cu *xcu, char *buf);
 ssize_t show_cu_info(struct xrt_cu *xcu, char *buf);
 ssize_t show_formatted_cu_stat(struct xrt_cu *xcu, char *buf);
+
+void compare_time(u64 *time);
+int init_cu_time(struct xrt_cu *xcu);
+int init_ecmd_count(struct xrt_cu *xcu);
+void incr_ecmd_count(struct xrt_cu *xcu);
+void reset_sq_count(struct xrt_cu *xcu, u64 sq_barrer);
+void incr_sq_count(struct xrt_cu *xcu);
+void update_ecmd_time(struct xrt_cu *xcu, u32 start_time, u32 end_time);
+ssize_t show_cu_busy(struct xrt_cu *xcu, char *buf);
+u64 get_incre_ecmd_count(struct xrt_cu *xcu);
+u64 get_average_sq(struct xrt_cu *xcu);
+ssize_t show_cu_idle(struct xrt_cu *xcu, char *buf);
+void xrt_cu_get_time(u64 *time);
+void compensate_count(u64 count, u64 *offset, u32 freq);
 
 void xrt_cu_circ_produce(struct xrt_cu *xcu, u32 stage, uintptr_t cmd);
 ssize_t xrt_cu_circ_consume_all(struct xrt_cu *xcu, char *buf, size_t size);
